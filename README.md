@@ -20,7 +20,7 @@ been executed using online laptop prices ($500-$800) and the inflation rate in 2
 # Pipeline
 I built a data pipeline that utilizes petabytes of publicly available web page data to **Calculate Inflation rates from first principles (Prices of Products)**
 
-![pipeline](static/crawler_pipeline.png)
+
 
 1. AWS Athena to query indexed WARC Files using HTTP header information in WARC Files
     * Scan 0(100 GB) data instead of PB
