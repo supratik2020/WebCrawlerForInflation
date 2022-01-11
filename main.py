@@ -1,101 +1,109 @@
-# Inspiration from https://www.bellingcat.com/resources/2015/08/13/using-python-to-mine-common-crawl/
-
-## PRODUCT FINDER ##
-# Scans common crawl infomation for products and
-# saves them to Amazon DynomoDB database.
-
-#Install
-#   boto3: https://github.com/boto/boto3. Make sure to add AWS Credentials on our machine, see docs.
-#   
-
-#Test Make sure code is working with local example - Run
-#   python productfinder_helper.py
-#Run
-#   python main --domain amazon.com
-
-# Version 1.2
-
-import requests
-import argparse
-import time
-import json
-from io import StringIO
-import gzip
+##Adapted from https://github.com/tedhyu/Auto-Querect
+from pyspark import SparkConf, SparkContext
+from pyspark.sql import SQLContext,SparkSession, functions as F
+from pyspark.sql.types import *
+import re
+import boto3
+from warcio.archiveiterator import ArchiveIterator
+from io import BytesIO
 from bs4 import BeautifulSoup
+from bs4.dammit import EncodingDetector
+import argparse
 
-#Own
-from product import Product
-from saveproducts import SaveProducts
-from productfinder import ProductFinder
-
-
-# parse the command line arguments
-ap = argparse.ArgumentParser()
-ap.add_argument("-d","--domain", required=True, help="The domain to target ie. youtube.com")
-args = vars(ap.parse_args())
-
-domain = args['domain']
-
-# list of available indices, "2014-52"
-# index_list = ["2017-39", "2017-34", "2017-30", "2017-26", "2017-22", "2017-17"]
-index_list = ["2019-04"]
-              #,"2019-09","2019-13","2019-18","2019-22","2019-26","2019-30","2019-35","2019-39","2019-43","2019-47","2019-51","2020-05","2020-10","2020-16"]
-#
-# Searches the Common Crawl Index for a domain.
-#
-
-def search_domain(domain):
-    record_list = []
-    print ("[*] Trying target domain: %s" % domain)
+def getComLineArgs():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input_file", "-in", type=str, default="", help="Input file name") 
+    parser.add_argument("--output_path", "-o", type=str,default="", help="Output file name")
     
-    for index in index_list:
-        print ("[*] Trying index %s" % index)
-        cc_url  = "http://index.commoncrawl.org/CC-MAIN-%s-index?" % index
-        cc_url += "url=%s&matchType=domain&output=json" % domain
-        print("cc_url: ",cc_url)
-        response = requests.get(cc_url)
-        print("responseStatus: ",response.status_code) 
-        if response.status_code == 200:
-            records = response.content.splitlines()
-            for record in records:
-                record_list.append(json.loads(record))  
-            print ("[*] Added %d results." % len(records))
-    print ("[*] Found a total of %d hits." % len(record_list))
-    return record_list        
+    return vars(parser.parse_args())
 
-def record_status_bad(record_dict):
-    if record_dict['status']=='200':
-        return True
+def html_to_text(page):
+    """Converts html page to text
+    Args:
+        page:  html
+    Returns:
+        soup.get_text(" ", strip=True):  string
+    """
+    try:
+        encoding = EncodingDetector.find_declared_encoding(page, is_html=True)
+        soup = BeautifulSoup(page, "lxml", from_encoding=encoding)
+        for script in soup(["script", "style"]):
+            script.extract()
+        return soup.get_text(" ", strip=True)
+    except:
+        return ""
 
-def record_is_product(record_dict):
-    if '/dp/' in record_dict['url']:
-        return True
-### -----------------------
-###     Main Function
-### -----------------------
+def fetch_process_warc_records(rows):
+    """Retrieves document from S3 Data Lake.  The argument is a row of warc_filename, warc_record_offset, warc_record_length.  
+       The html to be retrieved are pulled from the file using the offset and length.  
+    Args:
+        rows: list[string, int, int]
+    Returns:
+        fetch_process_warc_records
+    """
+    s3client = boto3.client('s3')
+    for row in rows:
+        warc_path = row['warc_filename']
+        offset = int(row['warc_record_offset'])
+        length = int(row['warc_record_length'])
+        rangereq = 'bytes={}-{}'.format(offset, (offset+length-1))
+        response = s3client.get_object(Bucket='commoncrawl', Key=warc_path, Range=rangereq)
+        record_stream = BytesIO(response["Body"].read())
+        for record in ArchiveIterator(record_stream):
+            page = record.content_stream().read()
+            text = html_to_text(page)
+            word_pattern = re.compile('\$+', re.UNICODE)
+            iterator = word_pattern.finditer(text)
+            #list of tuples (start,end) identifying all the places in the text where $ sign appears
+            price_index=[]
+            for match in iterator:
+                price_index.append(match.span())
+            sentences = []
+            #grab substrings ranging from text[start-300:end+10] using the $index above and add them to sentences list
+            for idx_tuple in price_index:
+                if (idx_tuple[0]-300) < 0:
+                    sentences.append(text[0:idx_tuple[1]+10])
+                else:
+                    sentences.append(text[idx_tuple[0]-300:idx_tuple[1]+10])
+            for sen in sentences:
+                title="None"
+                price="None"
+                if sen.find("$")!=-1:
+                    price = sen[sen.find("$"):]
+                    if (sen.find("Title")!=-1 and (sen.find("$")-100) > 0):
+                        title=sen[sen.find("Title")+6:sen.find("$")-100]
+                        yield title,price
+                    else:
+                        yield title,price
+                else:
+                    yield title,price
+
 def main():
-    print("Starting CommonCrawl Search")
-    #Finds all relevant domins
-    initial_record_list = search_domain(domain)
 
-    #Check for bad status
-    initial_record_list = search_domain(domain)
-    cleaned_record_list = list(filter(record_status_bad,initial_record_list))
+    args = getComLineArgs()
+    conf = SparkConf().setAll([("spark.executor.memory", "10g"),
+    ("spark.executor.instances", "8"),
+    ("spark.executor.cores", "3"),
+    ("spark.dynamicAllocation.enabled", "true"),])
     
-    #Check for product pages
-    record_list = list(filter(record_is_product,cleaned_record_list))
-
-    print("Total pages with products: ",len(record_list))
+    session = SparkSession.builder.master("yarn").config(conf=conf).getOrCreate() #Create Spark Session
     
-    #Creating save object - Products are saved to Amazon DynamoDB
-    #savethread = SaveProducts().start()
-    #Downloads page from CommconCrawl and Inspects, then Extracts infomation
-    product_finder_1 = ProductFinder(record_list)
+    input_path = "s3://walmart-east-2-usama/%s" % (args['input_file'])
+    sqldf = session.read.format("parquet").option("header", True).load(input_path+'/*')
     
-    products = product_finder_1.update() 
-    print("products_listLength: ",len(products)) 
-    saveProducts=SaveProducts(products)
-    saveProducts.update()
+    #Create rdd of the 1000 rows selected and manually repartition to avoid skew
+    warc_recs = sqldf.select("warc_filename", "warc_record_offset", "warc_record_length").rdd.repartition(40)
+    
+    #print("NumOfPartitions: ",warc_recs.getNumPartitions())
+    products= warc_recs.mapPartitions(fetch_process_warc_records)
+    sqlContext = SQLContext(session)
+     
+    schemaProduct = sqlContext.createDataFrame(products,['Product','Price'])
+    #Write to parquet format
+    output_path = "s3://output-east-2-usama/%s/" % (args['output_path'])
+    schemaProduct.write.parquet(output_path)
 
 if __name__ == '__main__':
+    #start_time = time.time()
     main()
+    #print("Program took %s seconds" % (time.time()-start_time))
