@@ -9,8 +9,7 @@
 # Introduction
 **Price Crawler: Tracking Price Inflation**
 
-This is a project completed in 3 weeks during the Insight Data Engineering Program (New York, 20B Session). The goal of this project is to calculate inflation rates from first principles.
-That means calculating inflation rate using prices of goods and services sold online.
+TThat means calculating inflation rate using prices of goods and services sold online.
 
 In this project, I built a pipleine to use petabytes of web page data contained in the [Common Crawl](https://commoncrawl.org/), an archive of web page content 
 to calculate inflation rates. The results can be used to enhance investment strategies or by businesses in deciding the cost of products. A sample batch job has 
