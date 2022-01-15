@@ -9,8 +9,6 @@
 # Introduction
 **Price Crawler: Tracking Price Inflation**
 
-TThat means calculating inflation rate using prices of goods and services sold online.
-
 In this project, I built a pipleine to use petabytes of web page data contained in the [Common Crawl](https://commoncrawl.org/), an archive of web page content 
 to calculate inflation rates. The results can be used to enhance investment strategies or by businesses in deciding the cost of products. A sample batch job has 
 been executed using online laptop prices ($500-$800) and the inflation rate in 2019 is measured to be 4.8% which is more than double the annual inflation rate of 
